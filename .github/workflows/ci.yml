@@ -235,3 +235,10 @@ jobs:
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    needs: [ secrets-scan, unit-test, integration-test, sast, sca, build-and-scan ]
+    steps:
+      - run: echo "All CI checks passed"
