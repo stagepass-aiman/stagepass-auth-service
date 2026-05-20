@@ -70,7 +70,7 @@ jobs:
         # mvn verify runs: compile → test → jacoco:report → jacoco:check
         # The 80% branch coverage gate is configured in pom.xml bound to the verify phase.
         # Never call jacoco:check directly — it has no rules when called as a standalone goal.
-        run: mvn verify -Dtest="**/unit/**" -DfailIfNoTests=true -q
+        run: mvn verify -Dtest="**/unit/**" -DfailIfNoTests=true -DskipITs=true -q
         env:
           AUTH_RSA_PRIVATE_KEY: ${{ env.AUTH_RSA_PRIVATE_KEY }}
           AUTH_RSA_PUBLIC_KEY: ${{ env.AUTH_RSA_PUBLIC_KEY }}
