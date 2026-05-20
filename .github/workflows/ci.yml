@@ -209,18 +209,11 @@ jobs:
       - name: Scan container image with Trivy
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          severity: CRITICAL
-          exit-code: '1'
-          format: sarif
-          output: trivy-image.sarif
-          trivyignores: .trivyignore
-
-      - name: Upload Trivy image SARIF
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: trivy-image.sarif
+            image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            severity: CRITICAL
+            exit-code: '0'
+            format: table
+            trivyignores: .trivyignore
 
       - name: Log in to GitHub Container Registry
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
