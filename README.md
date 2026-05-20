@@ -1,7 +1,7 @@
 # stagepass-auth-service
 
 **Tier:** T1 — Critical (99.9% SLO)
-**Framework:** Spring Boot 3.3 + Spring Security 6 + Java 21
+**Framework:** Spring Boot 3.5.0 + Spring Security 6.5 + Java 21
 **Databases:** PostgreSQL 16 (auth_db) · Redis 7 (DB 0)
 **Phase:** 3
 
@@ -52,20 +52,20 @@ Handles the complete authentication lifecycle for the StagePass platform:
 The service requires an RSA key pair. **Never commit keys.** Generate a local dev pair:
 
 ```bash
-# Generate 4096-bit private key (use 2048 for local dev speed)
-openssl genrsa -out /tmp/auth-private.pem 4096
+# Generate RSA 2048-bit private key
+openssl genrsa -out /tmp/auth-private.pem 2048
 
-# Export PKCS8 DER-encoded private key (base64) — this is what the service loads
+# Export PKCS8 DER-encoded private key — base64, no line breaks (-w 0)
 openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/auth-private.pem -nocrypt \
-  | base64 > /tmp/auth-private.b64
+  | base64 -w 0 > /tmp/auth-private.b64
 
-# Export X.509 DER-encoded public key (base64)
+# Export X.509 DER-encoded public key — base64, no line breaks (-w 0)
 openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
-  | base64 > /tmp/auth-public.b64
+  | base64 -w 0 > /tmp/auth-public.b64
 
-# Export to shell (required for docker-compose)
-export AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64)
-export AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64)
+# Write to .env file (gitignored — never commit this file)
+echo "AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64)" > .env
+echo "AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64)" >> .env
 ```
 
 ### Step 2 — Start the service
@@ -119,15 +119,18 @@ Expected response:
 
 ```bash
 # Unit tests only (fast — no Docker required)
-mvn test -Dtest="**/unit/**"
+mvn test -Dtest="**/unit/**" -DskipITs=true
 
 # Integration tests (requires Docker — Testcontainers spins up Postgres + Redis)
-mvn verify -Dtest="NONE"
+AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64) \
+AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64) \
+APP_JWT_KEY_ID=local-test-key \
+mvn verify -Dsurefire.skip=true -Djacoco.skip=true
 
 # All tests with coverage report
-export APP_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)
-export APP_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)
-export APP_JWT_KEY_ID=local-test-key
+AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64) \
+AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64) \
+APP_JWT_KEY_ID=local-test-key \
 mvn verify
 open target/site/jacoco/index.html
 ```
@@ -146,8 +149,8 @@ All secrets come from Vault in production (NFR-SEC-008). For local dev, set as e
 | `SPRING_DATA_REDIS_HOST` | Yes | Redis host | `localhost` |
 | `SPRING_DATA_REDIS_PORT` | Yes | Redis port | `6380` |
 | `SPRING_DATA_REDIS_DATABASE` | No | Redis DB index | `0` |
-| `APP_JWT_PRIVATE_KEY_B64` | Yes | PKCS8 RSA private key, base64 DER | (Vault) |
-| `APP_JWT_PUBLIC_KEY_B64` | Yes | X.509 RSA public key, base64 DER | (Vault) |
+| `AUTH_RSA_PRIVATE_KEY` | Yes | PKCS8 RSA private key, base64 DER, no line breaks | (Vault) |
+| `AUTH_RSA_PUBLIC_KEY` | Yes | X.509 RSA public key, base64 DER, no line breaks | (Vault) |
 | `APP_JWT_KEY_ID` | No | Key ID for JWKS kid field | `stagepass-auth-key-1` |
 | `APP_JWT_ACCESS_TOKEN_TTL_SECONDS` | No | Access token lifetime | `900` |
 | `APP_JWT_REFRESH_TOKEN_TTL_SECONDS` | No | Refresh token lifetime | `604800` |

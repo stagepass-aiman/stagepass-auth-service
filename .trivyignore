@@ -7,3 +7,10 @@ CVE-2026-29145
 CVE-2026-41293
 CVE-2026-43512
 CVE-2026-43515
+# CVE-2023-45853: zlib1g integer overflow in zipOpenNewFileInZip4_6
+# Status: will_not_fix — Debian 12 maintainers have assessed and declined to patch.
+# Fixed version: none available for Debian 12.
+# Risk: zlib's ZIP file creation API is not used by this service.
+# Auth Service handles no ZIP operations — exposure is nil.
+# Reference: https://avd.aquasec.com/nvd/cve-2023-45853
+CVE-2023-45853
