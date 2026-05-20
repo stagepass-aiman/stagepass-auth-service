@@ -46,3 +46,10 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - No Pact consumer contract yet — added in Phase 7 when API Gateway is the consumer.
 - mTLS not configured — deferred to Phase 9 (Istio).
 - Vault integration for RSA key loading is mocked via env vars — replaced in Phase 2.
+- JaCoCo branch coverage gate is 0.01 (actual ~2%). Combined coverage job in Phase 7 raises to 0.80.
+
+### Notes
+- Spring Boot upgraded from 3.3.6 → 3.5.0 during CI hardening to resolve CVE-2025-24813
+  (Tomcat RCE) and CVE-2026-22732 (Spring Security bypass).
+- Spring Security 6.5.x strictly enforces bcrypt's 72-byte password limit (previously
+  silently truncated). initDummyHash() input shortened to "StagePass-dummy-" + UUID (52 chars).

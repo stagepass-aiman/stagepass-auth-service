@@ -46,7 +46,8 @@
     <testcontainers.version>1.20.4</testcontainers.version>
     <!--
       Logstash encoder for structured JSON logging (logback backend).
-      Spring Boot 3.4+ has native JSON logging but we target 3.3.x here.
+      Spring Boot 3.5.0 has native JSON logging support.
+      We use logstash-logback-encoder for richer field customisation (service name, tier).
     -->
     <logstash-logback.version>7.4</logstash-logback.version>
     <!-- JaCoCo: branch coverage gate. Must not be lowered without ADR. -->

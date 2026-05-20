@@ -31,7 +31,7 @@ RUN mvn package -DskipTests -q
 #   3. snapshot-dependencies (internal snapshots — changes occasionally)
 #   4. application (changes on every code change — smallest layer)
 WORKDIR /build/target/extracted
-RUN java -Djarmode=layertools -jar /build/target/*.jar extract
+RUN java -Djarmode=tools -jar /build/target/*.jar extract --layers --launcher --destination /build/target/extracted
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Stage 2 — Runtime

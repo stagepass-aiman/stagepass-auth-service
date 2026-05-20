@@ -68,7 +68,8 @@ jobs:
 
       - name: Run unit tests with coverage and enforce threshold (NFR-MAINT-001)
         # mvn verify runs: compile → test → jacoco:report → jacoco:check
-        # The 80% branch coverage gate is configured in pom.xml bound to the verify phase.
+        # JaCoCo threshold is 0.01 — unit tests cover AuthService and JwtService only (~2% branch coverage).
+        # TODO Phase 7: raise to 0.80 with a combined Surefire+Failsafe coverage job.
         # Never call jacoco:check directly — it has no rules when called as a standalone goal.
         run: mvn verify -Dtest="**/unit/**" -DfailIfNoTests=true -DskipITs=true
         env:
@@ -175,7 +176,7 @@ jobs:
           scan-type: fs
           scan-ref: .
           severity: CRITICAL
-          exit-code: '0'   # Block on CRITICAL CVEs.
+          exit-code: '1'   # Block on CRITICAL CVEs.
           format: table
           trivyignores: .trivyignore
 
@@ -211,7 +212,7 @@ jobs:
         with:
             image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
             severity: CRITICAL
-            exit-code: '0'
+            exit-code: '1'
             format: table
             trivyignores: .trivyignore
 
