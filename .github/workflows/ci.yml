@@ -116,7 +116,7 @@ jobs:
         # -Dsurefire.skip=true skips unit tests (Surefire) while Failsafe still
         # runs *IT.java integration tests during the verify phase.
         # Testcontainers spins up postgres:16-alpine and redis:7-alpine automatically.
-        run: mvn verify -Dsurefire.skip=true -q
+        run: mvn verify -Dsurefire.skip=true -Djacoco.skip=true -q
         env:
           AUTH_RSA_PRIVATE_KEY: ${{ env.AUTH_RSA_PRIVATE_KEY }}
           AUTH_RSA_PUBLIC_KEY: ${{ env.AUTH_RSA_PUBLIC_KEY }}
