@@ -178,6 +178,7 @@ jobs:
           exit-code: '1'   # Block on CRITICAL CVEs.
           format: sarif
           output: trivy-deps.sarif
+          trivyignores: .trivyignore
 
       - name: Upload Trivy SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -220,6 +221,7 @@ jobs:
           exit-code: '1'
           format: sarif
           output: trivy-image.sarif
+          trivyignores: .trivyignore
 
       - name: Upload Trivy image SARIF
         uses: github/codeql-action/upload-sarif@v3
