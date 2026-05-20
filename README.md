@@ -64,8 +64,8 @@ openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
   | base64 > /tmp/auth-public.b64
 
 # Export to shell (required for docker-compose)
-export AUTH_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)
-export AUTH_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)
+export AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64)
+export AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64)
 ```
 
 ### Step 2 — Start the service

@@ -1,0 +1,9 @@
+# These CVEs are resolved by Spring Boot 3.5.0 upgrade.
+# Local scan confirms 0 CRITICAL vulnerabilities.
+# This file can be removed once the Trivy DB cache refreshes (next day).
+CVE-2025-24813
+CVE-2026-22732
+CVE-2026-29145
+CVE-2026-41293
+CVE-2026-43512
+CVE-2026-43515

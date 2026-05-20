@@ -104,7 +104,7 @@ public class AuthService {
     @PostConstruct
     void initDummyHash() {
         this.dummyHash = passwordEncoder.encode(
-            "StagePass-dummy-" + UUID.randomUUID() + "-" + Instant.now()
+            "StagePass-dummy-" + UUID.randomUUID()
         );
         log.info("Dummy bcrypt hash initialised for timing attack prevention. (THR-AUTH-07)");
     }
