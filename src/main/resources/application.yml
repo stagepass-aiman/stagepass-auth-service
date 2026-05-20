@@ -1,0 +1,204 @@
+# ============================================================
+# application.yml — StagePass Auth Service
+# Base configuration. No secrets. All sensitive values are
+# sourced from environment variables or Vault-injected env.
+# (NFR-SEC-008: secrets never in code or config files)
+# ============================================================
+
+spring:
+  application:
+    name: auth-service
+
+  # ──────────────────────────────────────────────
+  # Virtual threads (Java 21 + Spring Boot 3.2+)
+  # Replaces the platform thread pool in Tomcat with virtual threads.
+  # Each request gets its own virtual thread — no thread-pool tuning needed.
+  # Blocking I/O (DB, Redis) parks the virtual thread rather than blocking
+  # a platform thread, giving reactive-like throughput with blocking code.
+  # ──────────────────────────────────────────────
+  threads:
+    virtual:
+      enabled: true
+
+  # ──────────────────────────────────────────────
+  # DataSource — PostgreSQL (HikariCP)
+  # ──────────────────────────────────────────────
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/auth_db}
+    username: ${DB_USER:auth_user}
+    password: ${DB_PASSWORD}          # No default — must be supplied. Fails fast if missing.
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: AuthServicePool
+      # With virtual threads, each blocked DB call parks cheaply.
+      # Pool size is intentionally smaller than classic thread-pool sizes.
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000       # 30s max wait for a connection from pool.
+      idle-timeout: 600000            # 10min — release idle connections.
+      max-lifetime: 1800000           # 30min — recycle connections before PostgreSQL times them out.
+      keepalive-time: 60000           # 1min heartbeat query to prevent firewall timeouts.
+      connection-test-query: SELECT 1
+
+  # ──────────────────────────────────────────────
+  # JPA / Hibernate
+  # ──────────────────────────────────────────────
+  jpa:
+    hibernate:
+      # CRITICAL: 'validate' only — Hibernate checks the schema exists but
+      # NEVER creates or alters tables. Flyway owns all DDL. (V1–V4 migrations)
+      # If you set this to 'create' or 'update', you will bypass Flyway and
+      # create an untraceable schema divergence. Never do this.
+      ddl-auto: validate
+    show-sql: false                   # Never log SQL in production — too verbose.
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: false
+        # UUID strategy: use PostgreSQL's gen_random_uuid() instead of Java UUID.
+        id:
+          new_generator_mappings: true
+        jdbc:
+          time_zone: UTC              # All timestamps written as UTC.
+
+  # ──────────────────────────────────────────────
+  # Flyway — schema migration
+  # ──────────────────────────────────────────────
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # baseline-on-migrate: false — We start with a clean DB.
+    # If migrating an existing DB without Flyway history, set to true once.
+    baseline-on-migrate: false
+    validate-on-migrate: true         # Always validate checksums before running.
+    out-of-order: false               # Reject out-of-order migrations — strict sequence only.
+
+  # ──────────────────────────────────────────────
+  # Redis (Lettuce)
+  # DB 0 is the JTI blocklist, idempotency cache, and rate limit counters.
+  # A separate Redis DB (or instance) is used by other services.
+  # ──────────────────────────────────────────────
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}    # Empty string = no auth (local dev only)
+      database: ${REDIS_DB:0}
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 4
+          min-idle: 1
+
+  # ──────────────────────────────────────────────
+  # Jackson
+  # ──────────────────────────────────────────────
+  jackson:
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: false  # Tolerant reading — API evolution.
+    serialization:
+      write-dates-as-timestamps: false   # ISO-8601 strings, not epoch millis.
+    time-zone: UTC
+
+# ──────────────────────────────────────────────
+# Server
+# ──────────────────────────────────────────────
+server:
+  port: ${SERVER_PORT:8081}
+  # Graceful shutdown: drain in-flight requests on SIGTERM before exit.
+  # K8s sends SIGTERM and waits terminationGracePeriodSeconds (30s default).
+  shutdown: graceful
+  tomcat:
+    # With virtual threads, connection limits are less critical,
+    # but we set a cap to prevent runaway client connections.
+    max-connections: 10000
+    accept-count: 100
+
+spring.lifecycle:
+  timeout-per-shutdown-phase: 30s     # Match K8s terminationGracePeriodSeconds.
+
+# ──────────────────────────────────────────────
+# Actuator / Management
+# ──────────────────────────────────────────────
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8082}     # Separate port — not exposed via API Gateway.
+  endpoints:
+    web:
+      exposure:
+        # Only expose what is needed. Never expose 'env' or 'beans' — information disclosure.
+        include: health, prometheus, info
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always            # Details for internal health checks.
+      probes:
+        enabled: true                 # K8s liveness/readiness probes via actuator.
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      # These tags appear on every metric. Crucial for Grafana dashboards.
+      service: auth-service
+      tier: T1
+  tracing:
+    sampling:
+      probability: ${OTEL_SAMPLING_PROBABILITY:1.0}   # 100% in dev; tune in prod.
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://localhost:4318/v1/traces}
+
+# ──────────────────────────────────────────────
+# Logging — structured JSON via logback-spring.xml
+# NFR-OBS-001: all services emit structured JSON logs.
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    dev.stagepass.auth: ${LOG_LEVEL_AUTH:INFO}
+    org.springframework.security: WARN   # Suppress Spring Security DEBUG noise.
+    org.hibernate.SQL: WARN              # Never log SQL in structured output.
+    org.flywaydb: INFO
+
+# ──────────────────────────────────────────────
+# Application-specific configuration
+# All values sourced from environment variables.
+# Defaults provided only for local development.
+# ──────────────────────────────────────────────
+app:
+  jwt:
+    # RSA private key: DER-encoded PKCS8, Base64-encoded (no headers, no newlines).
+    # Generate: openssl genrsa -out private.pem 4096
+    #           openssl pkcs8 -topk8 -inform PEM -outform DER -in private.pem -nocrypt | base64 -w0
+    # In production: injected by Vault Agent as an environment variable. (THR-AUTH-01)
+    private-key: ${AUTH_RSA_PRIVATE_KEY}
+
+    # RSA public key: DER-encoded X.509/SPKI, Base64-encoded.
+    # Generate: openssl rsa -in private.pem -pubout -outform DER | base64 -w0
+    # Published at /auth/jwks — downstream services cache this at startup.
+    public-key: ${AUTH_RSA_PUBLIC_KEY}
+
+    # Key ID: appears in the JWT 'kid' header and the JWKS response.
+    # Downstream services use kid to select the correct key from the JWKS set.
+    # Rotate this value when rotating the RSA keypair.
+    key-id: ${AUTH_RSA_KEY_ID:stagepass-auth-key-1}
+
+    # Access token lifetime. MUST be ≤ 900 seconds (15 minutes). (NFR-SEC-002)
+    access-token-ttl-seconds: ${JWT_ACCESS_TTL:900}
+
+    # Refresh token lifetime. MUST be ≤ 604800 seconds (7 days). (NFR-SEC-002)
+    refresh-token-ttl-seconds: ${JWT_REFRESH_TTL:604800}
+
+  rate-limit:
+    login:
+      # Max login attempts per IP per 60-second window. (THR-AUTH-08)
+      # Applied in AuthController BEFORE delegating to AuthService.
+      requests-per-minute: ${RATE_LIMIT_LOGIN_RPM:5}
+
+  lockout:
+    # Number of consecutive failed login attempts before account lockout. (THR-AUTH-02)
+    max-attempts: ${LOCKOUT_MAX_ATTEMPTS:10}
+    # How long the lockout lasts (minutes). (THR-AUTH-02)
+    duration-minutes: ${LOCKOUT_DURATION_MINUTES:30}

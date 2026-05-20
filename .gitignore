@@ -1,0 +1,55 @@
+# ── Java / Maven ──────────────────────────────────────────────────────────────
+target/
+*.class
+*.jar
+*.war
+*.ear
+.mvn/wrapper/maven-wrapper.jar
+
+# ── IntelliJ IDEA ─────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# ── VS Code ───────────────────────────────────────────────────────────────────
+.vscode/
+*.code-workspace
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Environment / Secrets ─────────────────────────────────────────────────────
+# NEVER commit secrets. Use Vault. (NFR-SEC-008)
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+auth-private*.b64
+auth-public*.b64
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+# Do NOT ignore Dockerfile or docker-compose.yml — these are version-controlled.
+
+# ── Test output ───────────────────────────────────────────────────────────────
+surefire-reports/
+failsafe-reports/
+
+# ── Coverage ──────────────────────────────────────────────────────────────────
+# Coverage reports are generated artifacts, not source.
+target/site/jacoco/
+
+# ── Trivy / Security scan output ─────────────────────────────────────────────
+*.sarif
+
+# ── Pact ──────────────────────────────────────────────────────────────────────
+pact/generated/

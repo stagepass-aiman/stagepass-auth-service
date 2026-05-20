@@ -1,0 +1,117 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Auth Service — Standalone Local Development
+#
+# This compose file runs only the Auth Service and its direct dependencies
+# (PostgreSQL + Redis). It is for local development of this service in isolation.
+#
+# For the full StagePass stack (all services), use:
+#   stagepass-infrastructure/docker/compose/docker-compose.yml
+#
+# Usage:
+#   # Generate RSA key pair (one-time setup — see README.md for full instructions):
+#   openssl genrsa -out auth-private.pem 4096
+#   openssl pkcs8 -topk8 -inform PEM -outform DER -in auth-private.pem -nocrypt \
+#     | base64 > auth-private-key.b64
+#   openssl rsa -in auth-private.pem -pubout -outform DER \
+#     | base64 > auth-public-key.b64
+#
+#   export AUTH_JWT_PRIVATE_KEY_B64=$(cat auth-private-key.b64)
+#   export AUTH_JWT_PUBLIC_KEY_B64=$(cat auth-public-key.b64)
+#
+#   docker compose up
+# ═══════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: auth-postgres
+    environment:
+      POSTGRES_DB: auth_db
+      POSTGRES_USER: auth_user
+      # NEVER use this password in production. Secrets come from Vault (NFR-SEC-008).
+      POSTGRES_PASSWORD: auth_local_password
+    ports:
+      - "5433:5432"   # Non-default host port to avoid conflicts with other local Postgres instances.
+    volumes:
+      - auth_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth_user -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: auth-redis
+    # No password for local dev — Redis is not externally accessible beyond this compose network.
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6380:6379"   # Non-default host port.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Auth Service ──────────────────────────────────────────────────────────────
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: auth-service
+    ports:
+      - "8081:8081"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+
+      # Database
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/auth_db
+      SPRING_DATASOURCE_USERNAME: auth_user
+      SPRING_DATASOURCE_PASSWORD: auth_local_password
+
+      # Redis (DB 0 — JTI blocklist + rate limiting)
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_DATABASE: 0
+
+      # RSA key pair — must be set in the shell before running docker compose.
+      # Generate with instructions at the top of this file or in README.md.
+      AUTH_RSA_PRIVATE_KEY: ${AUTH_RSA_PRIVATE_KEY}
+      AUTH_RSA_PUBLIC_KEY: ${AUTH_RSA_PUBLIC_KEY}
+      APP_JWT_KEY_ID: stagepass-auth-key-1
+
+      # JWT TTL
+      APP_JWT_ACCESS_TOKEN_TTL_SECONDS: 900      # 15 minutes
+      APP_JWT_REFRESH_TOKEN_TTL_SECONDS: 604800  # 7 days
+
+      # Rate limiting (higher limits for local dev — see application-local.yml)
+      APP_RATE_LIMIT_LOGIN_MAX_PER_MINUTE: 60
+
+      # Lockout (fewer attempts in local dev for easier testing of the happy path)
+      APP_LOCKOUT_MAX_ATTEMPTS: 10
+      APP_LOCKOUT_DURATION_MINUTES: 5
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL",
+             "wget -q -O /dev/null http://localhost:8081/health/ready || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s    # Allow time for JVM startup + Flyway migration.
+
+volumes:
+  auth_postgres_data:
+    name: auth_postgres_data
+
+networks:
+  default:
+    name: auth-network

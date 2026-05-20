@@ -1,0 +1,21 @@
+# ============================================================
+# application-local.yml
+# Active when: spring.profiles.active=local
+# Purpose: Local Docker Compose development overrides.
+# This profile is NOT used in CI or any deployed environment.
+# ============================================================
+
+# In local dev, DB_PASSWORD and AUTH_RSA_PRIVATE_KEY must be set
+# in a .env.local file (gitignored). See README.md for setup instructions.
+
+logging:
+  level:
+    dev.stagepass.auth: DEBUG
+    org.springframework.security: DEBUG
+
+app:
+  rate-limit:
+    login:
+      # Relaxed in local dev — 60 req/min instead of 5.
+      # This prevents developer frustration during testing.
+      requests-per-minute: 60

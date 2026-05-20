@@ -1,0 +1,251 @@
+name: CI — Auth Service
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Cancel in-progress runs for the same branch/PR.
+# This prevents queued CI runs from blocking a busy PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: '21'
+  IMAGE_NAME: ghcr.io/stagepass-aiman/stagepass-auth-service
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 1 — Secrets scan
+  # Runs first — no point continuing if secrets are committed. (NFR-SEC-013)
+  # ─────────────────────────────────────────────────────────────────────────────
+  secrets-scan:
+    name: Secrets Scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history for accurate secret scanning.
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # gitleaks-action exits non-zero if secrets are detected.
+        # This blocks all subsequent jobs via needs: [secrets-scan].
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 2 — Build + Unit Tests + Coverage gate
+  # ─────────────────────────────────────────────────────────────────────────────
+  unit-test:
+    name: Unit Tests + Coverage Gate
+    runs-on: ubuntu-latest
+    needs: [secrets-scan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven   # Cache ~/.m2 across runs.
+
+      - name: Generate test RSA key pair
+        # Tests need a real key pair. Generate one in CI — never commit a key.
+        run: |
+          openssl genrsa -out /tmp/auth-private.pem 2048
+          openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/auth-private.pem -nocrypt \
+            | base64 -w 0 > /tmp/auth-private.b64
+          openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
+            | base64 -w 0 > /tmp/auth-public.b64
+          echo "APP_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
+          echo "APP_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
+
+      - name: Run unit tests with coverage
+        # -Dtest="**/unit/**" — only unit tests in this job.
+        # Integration tests are in a separate job (they need Testcontainers + Docker).
+        # JaCoCo coverage report is generated here.
+        run: mvn test -Dtest="**/unit/**" jacoco:report -q
+        env:
+          APP_JWT_PRIVATE_KEY_B64: ${{ env.APP_JWT_PRIVATE_KEY_B64 }}
+          APP_JWT_PUBLIC_KEY_B64: ${{ env.APP_JWT_PUBLIC_KEY_B64 }}
+          APP_JWT_KEY_ID: ci-test-key
+
+      - name: Enforce coverage threshold (≥80% branch coverage — NFR-MAINT-001)
+        # JaCoCo is configured in pom.xml to fail the build if branch coverage < 80%.
+        # The verify phase triggers the JaCoCo check goal.
+        run: mvn jacoco:check -q
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: target/site/jacoco/
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 3 — Integration Tests (Testcontainers)
+  # Testcontainers requires Docker — ubuntu-latest runners have Docker installed.
+  # ─────────────────────────────────────────────────────────────────────────────
+  integration-test:
+    name: Integration Tests (Testcontainers)
+    runs-on: ubuntu-latest
+    needs: [secrets-scan]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Generate test RSA key pair
+        run: |
+          openssl genrsa -out /tmp/auth-private.pem 2048
+          openssl pkcs8 -topk8 -inform PEM -outform DER -in /tmp/auth-private.pem -nocrypt \
+            | base64 -w 0 > /tmp/auth-private.b64
+          openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
+            | base64 -w 0 > /tmp/auth-public.b64
+          echo "APP_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
+          echo "APP_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
+
+      - name: Run integration tests (Failsafe)
+        # Maven Failsafe runs *IT.java tests. Testcontainers spins up
+        # postgres:16-alpine and redis:7-alpine automatically.
+        run: mvn verify -Dtest="NONE" -DfailIfNoTests=false -q
+        env:
+          APP_JWT_PRIVATE_KEY_B64: ${{ env.APP_JWT_PRIVATE_KEY_B64 }}
+          APP_JWT_PUBLIC_KEY_B64: ${{ env.APP_JWT_PUBLIC_KEY_B64 }}
+          APP_JWT_KEY_ID: ci-it-key
+          # Testcontainers reuse is disabled in CI (no persistent Docker daemon state).
+          TESTCONTAINERS_REUSE_ENABLE: "false"
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 4 — SAST (SonarQube + Semgrep)
+  # Runs after unit tests (needs the compiled class files and coverage report).
+  # Blocks on HIGH severity findings. (NFR-SEC-010)
+  # ─────────────────────────────────────────────────────────────────────────────
+  sast:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    needs: [unit-test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/java
+            p/owasp-top-ten
+            p/secrets
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 5 — SCA (Dependency vulnerability scan)
+  # Blocks on CRITICAL CVEs in dependencies. (NFR-SEC-011)
+  # ─────────────────────────────────────────────────────────────────────────────
+  sca:
+    name: SCA (Trivy — dependencies)
+    runs-on: ubuntu-latest
+    needs: [unit-test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: temurin
+          cache: maven
+
+      - name: Build fat JAR for Trivy scan
+        run: mvn package -DskipTests -q
+
+      - name: Run Trivy (JAR dependency scan)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: '1'   # Block on CRITICAL CVEs.
+          format: sarif
+          output: trivy-deps.sarif
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-deps.sarif
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # JOB 6 — Docker Build + Container Scan
+  # Only runs if unit + integration tests pass.
+  # Blocks on CRITICAL CVEs in the container image. (NFR-SEC-012)
+  # ─────────────────────────────────────────────────────────────────────────────
+  build-and-scan:
+    name: Docker Build + Container Scan (Trivy)
+    runs-on: ubuntu-latest
+    needs: [unit-test, integration-test]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (no push — scan first)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          # Export to local Docker daemon for Trivy scan.
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan container image with Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: CRITICAL
+          exit-code: '1'
+          format: sarif
+          output: trivy-image.sarif
+
+      - name: Upload Trivy image SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-image.sarif
+
+      - name: Log in to GitHub Container Registry
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to GHCR (main branch only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

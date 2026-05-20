@@ -1,0 +1,392 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Parent: Spring Boot BOM manages all compatible dependency versions.
+    We pin the Boot version here; everything else is version-managed
+    by the BOM unless we have a specific reason to override (see JJWT below).
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.3.6</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>dev.stagepass</groupId>
+  <artifactId>auth-service</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+  <name>StagePass Auth Service</name>
+  <description>
+    Identity root of the StagePass platform.
+    Issues RS256 JWTs, manages the JWKS endpoint, enforces four-role RBAC,
+    and maintains the Redis JTI blocklist for targeted token revocation.
+    T1 service — 99.9% SLO.
+  </description>
+
+  <properties>
+    <java.version>21</java.version>
+    <!--
+      JJWT 0.12.x is pinned explicitly because Spring Boot's BOM does not
+      manage JJWT (it manages nimbus-jose-jwt via oauth2-jose, but we chose
+      JJWT for its cleaner builder API for JWT issuance).
+      0.12.x is the current major version; 0.11.x has breaking API differences.
+    -->
+    <jjwt.version>0.12.6</jjwt.version>
+    <!--
+      Testcontainers version kept in sync with Spring Boot's managed BOM
+      version where possible. Check spring-boot-dependencies for the managed
+      version before overriding.
+    -->
+    <testcontainers.version>1.20.4</testcontainers.version>
+    <!--
+      Logstash encoder for structured JSON logging (logback backend).
+      Spring Boot 3.4+ has native JSON logging but we target 3.3.x here.
+    -->
+    <logstash-logback.version>7.4</logstash-logback.version>
+    <!-- JaCoCo: branch coverage gate. Must not be lowered without ADR. -->
+    <jacoco.version>0.8.12</jacoco.version>
+    <sonar.coverage.jacoco.xmlReportPaths>
+      ${project.build.directory}/site/jacoco/jacoco.xml
+    </sonar.coverage.jacoco.xmlReportPaths>
+  </properties>
+
+  <dependencies>
+
+    <!-- ═══════════════════════════════════════════
+         SPRING BOOT STARTERS
+         ═══════════════════════════════════════════ -->
+
+    <!--
+      Web: embedded Tomcat, Jackson, DispatcherServlet.
+      We use Spring MVC (not WebFlux) — blocking I/O is fine here because
+      virtual threads (configured in application.yml) give us the throughput
+      of reactive without the cognitive overhead of reactive programming.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- Security: FilterChain, method security, password encoders. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- JPA: Hibernate 6 + Spring Data repositories. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <!--
+      Redis: Lettuce client. Used for:
+        - JTI blocklist (DB 0)
+        - Idempotency key cache (DB 0, prefixed auth:idem:)
+        - Login rate limiting (DB 0, prefixed auth:rate:)
+      Lettuce is non-blocking under the hood; HikariCP equivalent for Redis.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-redis</artifactId>
+    </dependency>
+
+    <!-- Validation: Jakarta Bean Validation on record components. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!--
+      Actuator: /actuator/prometheus, /actuator/health.
+      /health/live and /health/ready are custom endpoints in HealthController
+      (required by our OpenAPI spec at those exact paths).
+      Actuator health is also enabled for internal K8s probes.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- ═══════════════════════════════════════════
+         JWT
+         ═══════════════════════════════════════════ -->
+
+    <!--
+      JJWT API: fluent builder for creating and parsing JWTs.
+      Split into api (compile) + impl (runtime) + jackson (runtime for JSON).
+      We use RS256 (RSA-SHA256) — private key signs, public key verifies.
+      The impl and jackson artifacts must be runtime-only; never depend on
+      JJWT internals at compile time (the API surface is stable, internals are not).
+    -->
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-api</artifactId>
+      <version>${jjwt.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-impl</artifactId>
+      <version>${jjwt.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.jsonwebtoken</groupId>
+      <artifactId>jjwt-jackson</artifactId>
+      <version>${jjwt.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- ═══════════════════════════════════════════
+         DATABASE
+         ═══════════════════════════════════════════ -->
+
+    <!-- PostgreSQL JDBC driver. Runtime only — no compile-time dependency. -->
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!--
+      Flyway: schema migration. Owns the DDL — Hibernate DDL is set to
+      'validate' only (it checks the schema exists but never modifies it).
+      flyway-database-postgresql is the PostgreSQL-specific dialect plugin
+      required since Flyway 10.x for PostgreSQL support.
+    -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+
+    <!-- ═══════════════════════════════════════════
+         OBSERVABILITY
+         ═══════════════════════════════════════════ -->
+
+    <!-- Prometheus registry: exposes /actuator/prometheus (NFR-OBS-002). -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <!--
+      OTel tracing bridge: Micrometer Tracing → OpenTelemetry SDK.
+      micrometer-tracing-bridge-otel connects Spring's Observation API to OTel.
+      opentelemetry-exporter-otlp exports spans to the OTel Collector,
+      which then forwards to Jaeger. (NFR-OBS-003)
+    -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-tracing-bridge-otel</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.opentelemetry</groupId>
+      <artifactId>opentelemetry-exporter-otlp</artifactId>
+    </dependency>
+
+    <!--
+      Logstash Logback encoder: structured JSON logs (NFR-OBS-001).
+      Configured in logback-spring.xml. Includes traceId, spanId from MDC
+      automatically when Micrometer Tracing is on the classpath.
+    -->
+    <dependency>
+      <groupId>net.logstash.logback</groupId>
+      <artifactId>logstash-logback-encoder</artifactId>
+      <version>${logstash-logback.version}</version>
+    </dependency>
+
+    <!-- ═══════════════════════════════════════════
+         TEST DEPENDENCIES
+         ═══════════════════════════════════════════ -->
+
+    <!--
+      Spring Boot Test: JUnit 5 + Mockito + AssertJ + MockMvc.
+      Excludes vintage (JUnit 4) engine — we write only JUnit 5 tests.
+    -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Spring Security Test: @WithMockUser, SecurityMockMvcRequestPostProcessors. -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Testcontainers JUnit 5 integration: @Testcontainers, @Container annotations.
+      junit-jupiter provides the lifecycle extension.
+    -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Testcontainers PostgreSQL: spins up a real postgres:16-alpine container
+      for integration tests. Flyway runs migrations against it automatically.
+    -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>postgresql</artifactId>
+      <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Testcontainers core (GenericContainer) for Redis.
+      There is no first-party Redis module; we use GenericContainer
+      with the redis:7-alpine image. This is intentional — it keeps
+      the dependency count low and shows the pattern for any container
+      without a first-party module.
+    -->
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <version>${testcontainers.version}</version>
+      <scope>test</scope>
+    </dependency>
+
+  </dependencies>
+
+  <build>
+    <plugins>
+
+      <!--
+        Spring Boot Maven Plugin: repackages the jar into a fat executable jar
+        with the embedded Tomcat server. Also configures the layered jar layout
+        for efficient Docker image caching (dependencies layer rarely changes).
+      -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <layers>
+            <enabled>true</enabled>
+          </layers>
+          <!-- Exclude dev tools from the production jar. -->
+          <excludes>
+            <exclude>
+              <groupId>org.springframework.boot</groupId>
+              <artifactId>spring-boot-devtools</artifactId>
+            </exclude>
+          </excludes>
+        </configuration>
+      </plugin>
+
+      <!-- Compiler: Java 21, enable preview features for pattern matching. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <release>21</release>
+          <compilerArgs>
+            <arg>-parameters</arg> <!-- Preserves parameter names for Spring MVC binding. -->
+          </compilerArgs>
+        </configuration>
+      </plugin>
+
+      <!--
+        Surefire: unit tests only (excludes *IT.java).
+        Integration tests run via Failsafe in the verify phase.
+        This separation matters in CI: unit tests run fast and fail fast.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <excludes>
+            <exclude>**/*IT.java</exclude>
+          </excludes>
+          <argLine>${argLine}</argLine> <!-- JaCoCo agent injected here. -->
+        </configuration>
+      </plugin>
+
+      <!--
+        Failsafe: integration tests (*IT.java) in verify phase.
+        Testcontainers starts Docker containers; this phase can take 30-60s.
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <argLine>${argLine}</argLine>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!--
+        JaCoCo: enforces ≥80% branch coverage (NFR-MAINT-001).
+        The 'check' goal fails the build if coverage drops below the minimum.
+        The 'report' goal generates the XML report consumed by SonarQube.
+        Never lower the minimum without updating the ADR and NFR.
+      -->
+      <plugin>
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <version>${jacoco.version}</version>
+        <executions>
+          <execution>
+            <id>prepare-agent</id>
+            <goals><goal>prepare-agent</goal></goals>
+          </execution>
+          <execution>
+            <id>report</id>
+            <phase>verify</phase>
+            <goals><goal>report</goal></goals>
+          </execution>
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals><goal>check</goal></goals>
+            <configuration>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.80</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+              <!-- Exclude generated code and config classes from the coverage gate. -->
+              <excludes>
+                <exclude>dev/stagepass/auth/AuthServiceApplication.class</exclude>
+                <exclude>dev/stagepass/auth/dto/**</exclude>
+                <exclude>dev/stagepass/auth/domain/UserRole.class</exclude>
+                <exclude>dev/stagepass/auth/domain/UserStatus.class</exclude>
+              </excludes>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+    </plugins>
+  </build>
+
+</project>

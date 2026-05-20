@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  logback-spring.xml — StagePass Auth Service
+  Structured JSON logging using logstash-logback-encoder.
+  NFR-OBS-001: all services emit structured JSON logs with correlation IDs.
+
+  The encoder automatically includes MDC fields (traceId, spanId, userId)
+  in every JSON log line when Micrometer Tracing is on the classpath.
+  traceId and spanId are injected by the Micrometer OTel bridge.
+  userId is injected by BearerTokenFilter after successful authentication.
+-->
+<configuration>
+
+  <!-- Spring property for profile-aware log level. -->
+  <springProperty name="LOG_LEVEL_AUTH" source="logging.level.dev.stagepass.auth" defaultValue="INFO"/>
+
+  <!-- ═══════════════════════════════════════════
+       Appender: structured JSON to stdout.
+       In K8s, stdout is collected by Promtail and sent to Loki.
+       In local dev, pipe through jq for human-readable output:
+         docker logs auth-service | jq .
+       ═══════════════════════════════════════════ -->
+  <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <!--
+        customFields: static fields that appear in every log line.
+        These match the tags in application.yml (management.metrics.tags).
+      -->
+      <customFields>{"service":"auth-service","tier":"T1"}</customFields>
+
+      <!--
+        Include MDC fields automatically.
+        Micrometer Tracing writes traceId and spanId to MDC.
+        BearerTokenFilter writes userId to MDC.
+        These appear as top-level JSON fields alongside the message.
+      -->
+      <includeMdc>true</includeMdc>
+
+      <!--
+        Timestamp in ISO-8601 UTC (NFR convention: UTC stored, ISO-8601 in APIs).
+      -->
+      <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSZ</timestampPattern>
+      <timeZone>UTC</timeZone>
+
+      <!--
+        Shorten logger names for readability.
+        dev.stagepass.auth.service.AuthService → a.s.AuthService
+      -->
+      <shortenedLoggerNameLength>40</shortenedLoggerNameLength>
+
+      <!--
+        Do NOT log the stack trace as a raw multi-line string (unqueryable in Loki).
+        Instead, the encoder emits stack_trace as a structured JSON field.
+      -->
+      <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+        <maxDepthPerCause>20</maxDepthPerCause>
+        <rootCauseFirst>true</rootCauseFirst>
+      </throwableConverter>
+    </encoder>
+  </appender>
+
+  <!-- ═══════════════════════════════════════════
+       Logger configuration
+       ═══════════════════════════════════════════ -->
+
+  <logger name="dev.stagepass.auth" level="${LOG_LEVEL_AUTH}" additivity="false">
+    <appender-ref ref="JSON_STDOUT"/>
+  </logger>
+
+  <!-- Spring Security: WARN in all environments. DEBUG is extremely verbose. -->
+  <logger name="org.springframework.security" level="WARN" additivity="false">
+    <appender-ref ref="JSON_STDOUT"/>
+  </logger>
+
+  <!-- Hibernate SQL: never log SQL — verbose and potential PII leak. -->
+  <logger name="org.hibernate.SQL" level="WARN" additivity="false">
+    <appender-ref ref="JSON_STDOUT"/>
+  </logger>
+
+  <!-- Flyway: INFO so migration progress is visible in startup logs. -->
+  <logger name="org.flywaydb" level="INFO" additivity="false">
+    <appender-ref ref="JSON_STDOUT"/>
+  </logger>
+
+  <root level="INFO">
+    <appender-ref ref="JSON_STDOUT"/>
+  </root>
+
+</configuration>

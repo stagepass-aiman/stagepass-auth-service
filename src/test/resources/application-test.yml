@@ -1,0 +1,35 @@
+# ============================================================
+# application-test.yml
+# Active when: @SpringBootTest with test profile
+# Purpose: Test-specific overrides.
+# Testcontainers will override DB_URL, REDIS_HOST, REDIS_PORT
+# via DynamicPropertySource. These defaults are fallbacks.
+# ============================================================
+
+spring:
+  flyway:
+    enabled: true                     # Flyway runs migrations on the test container.
+  jpa:
+    hibernate:
+      ddl-auto: validate              # Schema comes from Flyway, not Hibernate.
+
+# Provide test RSA keys — these are test-only throwaway keys.
+# NEVER use these keys in any non-test environment.
+# Keys are loaded from test resources in AbstractIntegrationTest.
+app:
+  jwt:
+    access-token-ttl-seconds: 900
+    refresh-token-ttl-seconds: 604800
+    key-id: test-key-1
+  rate-limit:
+    login:
+      requests-per-minute: 1000       # Effectively disabled in tests.
+  lockout:
+    max-attempts: 100                 # Effectively disabled in tests.
+    duration-minutes: 1
+
+logging:
+  level:
+    root: WARN
+    dev.stagepass.auth: INFO
+    org.flywaydb: INFO
