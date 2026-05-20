@@ -179,12 +179,6 @@ jobs:
           format: table
           trivyignores: .trivyignore
 
-      - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with:
-          sarif_file: trivy-deps.sarif
-
   # ─────────────────────────────────────────────────────────────────────────────
   # JOB 6 — Docker Build + Container Scan
   # Only runs if unit + integration tests pass.
@@ -223,7 +217,7 @@ jobs:
           trivyignores: .trivyignore
 
       - name: Upload Trivy image SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-image.sarif
