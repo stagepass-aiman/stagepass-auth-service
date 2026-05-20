@@ -20,6 +20,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────────
   # JOB 1 — Secrets scan
   # Runs first — no point continuing if secrets are committed. (NFR-SEC-013)
+  # Uses gitleaks CLI directly — gitleaks-action requires a paid license for orgs.
   # ─────────────────────────────────────────────────────────────────────────────
   secrets-scan:
     name: Secrets Scan (gitleaks)
@@ -27,18 +28,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0   # Full history for accurate secret scanning.
 
-      - name: Install gitleaks
+      - name: Install and run gitleaks
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
             | tar -xz gitleaks
           sudo mv gitleaks /usr/local/bin/
-
-      - name: Run gitleaks
-        run: gitleaks detect --source . --verbose
-        # gitleaks-action exits non-zero if secrets are detected.
-        # This blocks all subsequent jobs via needs: [secrets-scan].
+          gitleaks detect --source . --verbose
 
   # ─────────────────────────────────────────────────────────────────────────────
   # JOB 2 — Build + Unit Tests + Coverage gate
@@ -66,23 +63,18 @@ jobs:
             | base64 -w 0 > /tmp/auth-private.b64
           openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
             | base64 -w 0 > /tmp/auth-public.b64
-          echo "APP_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
-          echo "APP_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
+          echo "AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
+          echo "AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
 
-      - name: Run unit tests with coverage
-        # -Dtest="**/unit/**" — only unit tests in this job.
-        # Integration tests are in a separate job (they need Testcontainers + Docker).
-        # JaCoCo coverage report is generated here.
-        run: mvn test -Dtest="**/unit/**" jacoco:report -q
+      - name: Run unit tests with coverage and enforce threshold (NFR-MAINT-001)
+        # mvn verify runs: compile → test → jacoco:report → jacoco:check
+        # The 80% branch coverage gate is configured in pom.xml bound to the verify phase.
+        # Never call jacoco:check directly — it has no rules when called as a standalone goal.
+        run: mvn verify -Dtest="**/unit/**" -DfailIfNoTests=true -q
         env:
-          APP_JWT_PRIVATE_KEY_B64: ${{ env.APP_JWT_PRIVATE_KEY_B64 }}
-          APP_JWT_PUBLIC_KEY_B64: ${{ env.APP_JWT_PUBLIC_KEY_B64 }}
+          AUTH_RSA_PRIVATE_KEY: ${{ env.AUTH_RSA_PRIVATE_KEY }}
+          AUTH_RSA_PUBLIC_KEY: ${{ env.AUTH_RSA_PUBLIC_KEY }}
           APP_JWT_KEY_ID: ci-test-key
-
-      - name: Enforce coverage threshold (≥80% branch coverage — NFR-MAINT-001)
-        # JaCoCo is configured in pom.xml to fail the build if branch coverage < 80%.
-        # The verify phase triggers the JaCoCo check goal.
-        run: mvn jacoco:check -q
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
@@ -117,22 +109,23 @@ jobs:
             | base64 -w 0 > /tmp/auth-private.b64
           openssl rsa -in /tmp/auth-private.pem -pubout -outform DER \
             | base64 -w 0 > /tmp/auth-public.b64
-          echo "APP_JWT_PRIVATE_KEY_B64=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
-          echo "APP_JWT_PUBLIC_KEY_B64=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
+          echo "AUTH_RSA_PRIVATE_KEY=$(cat /tmp/auth-private.b64)" >> $GITHUB_ENV
+          echo "AUTH_RSA_PUBLIC_KEY=$(cat /tmp/auth-public.b64)" >> $GITHUB_ENV
 
       - name: Run integration tests (Failsafe)
-        # Maven Failsafe runs *IT.java tests. Testcontainers spins up
-        # postgres:16-alpine and redis:7-alpine automatically.
-        run: mvn verify -Dtest="NONE" -DfailIfNoTests=false -q
+        # -Dsurefire.skip=true skips unit tests (Surefire) while Failsafe still
+        # runs *IT.java integration tests during the verify phase.
+        # Testcontainers spins up postgres:16-alpine and redis:7-alpine automatically.
+        run: mvn verify -Dsurefire.skip=true -q
         env:
-          APP_JWT_PRIVATE_KEY_B64: ${{ env.APP_JWT_PRIVATE_KEY_B64 }}
-          APP_JWT_PUBLIC_KEY_B64: ${{ env.APP_JWT_PUBLIC_KEY_B64 }}
+          AUTH_RSA_PRIVATE_KEY: ${{ env.AUTH_RSA_PRIVATE_KEY }}
+          AUTH_RSA_PUBLIC_KEY: ${{ env.AUTH_RSA_PUBLIC_KEY }}
           APP_JWT_KEY_ID: ci-it-key
           # Testcontainers reuse is disabled in CI (no persistent Docker daemon state).
           TESTCONTAINERS_REUSE_ENABLE: "false"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # JOB 4 — SAST (SonarQube + Semgrep)
+  # JOB 4 — SAST (Semgrep)
   # Runs after unit tests (needs the compiled class files and coverage report).
   # Blocks on HIGH severity findings. (NFR-SEC-010)
   # ─────────────────────────────────────────────────────────────────────────────
