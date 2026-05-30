@@ -4,10 +4,18 @@
   Structured JSON logging using logstash-logback-encoder.
   NFR-OBS-001: all services emit structured JSON logs with correlation IDs.
 
-  The encoder automatically includes MDC fields (traceId, spanId, userId)
-  in every JSON log line when Micrometer Tracing is on the classpath.
-  traceId and spanId are injected by the Micrometer OTel bridge.
-  userId is injected by BearerTokenFilter after successful authentication.
+  Trace correlation field convention (LOCKED): snake_case `trace_id` / `span_id`,
+  platform-wide. This matches what Event Service emits (pino + native OTel
+  injection produces trace_id/span_id) so a single Loki query field works
+  across every service. See ADR-003 (W3C traceparent propagation).
+
+  WHY a composite encoder and not the LogstashEncoder shortcut:
+  <includeMdc>true</includeMdc> dumps every MDC entry using its MDC KEY as the
+  JSON field name. Micrometer's OTel bridge writes the MDC keys `traceId` and
+  `spanId` (camelCase). There is no clean key-rename hook on includeMdc, so the
+  shortcut can only ever produce camelCase. The composite encoder lets us read
+  those MDC values and re-emit them under snake_case names while leaving every
+  other MDC field (userId, bookingId, eventId) flowing untouched.
 -->
 <configuration>
 
@@ -16,51 +24,95 @@
 
   <!-- ═══════════════════════════════════════════
        Appender: structured JSON to stdout.
-       In K8s, stdout is collected by Promtail and sent to Loki.
+       In K8s/Compose, stdout is collected by Promtail and shipped to Loki.
        In local dev, pipe through jq for human-readable output:
          docker logs auth-service | jq .
        ═══════════════════════════════════════════ -->
   <appender name="JSON_STDOUT" class="ch.qos.logback.core.ConsoleAppender">
-    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-      <!--
-        customFields: static fields that appear in every log line.
-        These match the tags in application.yml (management.metrics.tags).
-      -->
-      <customFields>{"service":"auth-service","tier":"T1"}</customFields>
+    <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+      <providers>
 
-      <!--
-        Include MDC fields automatically.
-        Micrometer Tracing writes traceId and spanId to MDC.
-        BearerTokenFilter writes userId to MDC.
-        These appear as top-level JSON fields alongside the message.
-      -->
-      <includeMdc>true</includeMdc>
+        <!-- Timestamp in ISO-8601 UTC (NFR convention: UTC stored, ISO-8601 wire). -->
+        <timestamp>
+          <fieldName>@timestamp</fieldName>
+          <timeZone>UTC</timeZone>
+          <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSZ</pattern>
+        </timestamp>
 
-      <!--
-        Timestamp in ISO-8601 UTC (NFR convention: UTC stored, ISO-8601 in APIs).
-      -->
-      <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSZ</timestampPattern>
-      <timeZone>UTC</timeZone>
+        <!-- level (unchanged field name vs. previous LogstashEncoder output). -->
+        <logLevel/>
 
-      <!--
-        Shorten logger names for readability.
-        dev.stagepass.auth.service.AuthService → a.s.AuthService
-      -->
-      <shortenedLoggerNameLength>40</shortenedLoggerNameLength>
+        <!-- logger_name, shortened: dev.stagepass.auth.service.AuthService -> a.s.AuthService -->
+        <loggerName>
+          <shortenedLoggerNameLength>40</shortenedLoggerNameLength>
+        </loggerName>
 
-      <!--
-        Do NOT log the stack trace as a raw multi-line string (unqueryable in Loki).
-        Instead, the encoder emits stack_trace as a structured JSON field.
-      -->
-      <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
-        <maxDepthPerCause>20</maxDepthPerCause>
-        <rootCauseFirst>true</rootCauseFirst>
-      </throwableConverter>
+        <!-- thread_name, message (unchanged field names). -->
+        <threadName/>
+        <message/>
+
+        <!--
+          THE FIX. Read the trace context out of MDC (written there by the
+          Micrometer OTel bridge under keys traceId/spanId) and re-emit it under
+          the LOCKED snake_case names. `:-` yields an empty string when there is
+          no active trace context (e.g. startup / Flyway logs) instead of the
+          literal text "traceId_IS_UNDEFINED".
+
+          The static NFR-OBS-001 fields (service, tier) ride the SAME pattern
+          provider. This is deliberate: <globalCustomFields> is the "intended"
+          static-fields provider, but in this logback + logstash-encoder version
+          its bean has two setters mapping to the same property (customFieldsNode),
+          so Joran cannot resolve the inline-JSON value and silently leaves it
+          empty (startup WARN: "contains multiple setters for the same property").
+          The <pattern> provider has no such ambiguity and is already proven to
+          emit correctly here, so we use it for both dynamic and static fields.
+        -->
+        <pattern>
+          <pattern>{"service":"auth-service","tier":"T1","trace_id":"%mdc{traceId:-}","span_id":"%mdc{spanId:-}"}</pattern>
+        </pattern>
+
+        <!--
+          All remaining MDC keys still flow as top-level fields:
+            userId    — written by BearerTokenFilter after authentication
+            bookingId / eventId — written by downstream business code where present
+          We EXCLUDE traceId/spanId here so the camelCase originals do not reappear
+          alongside the snake_case versions emitted by the <pattern> provider above.
+        -->
+        <mdc>
+          <excludeMdcKeyName>traceId</excludeMdcKeyName>
+          <excludeMdcKeyName>spanId</excludeMdcKeyName>
+        </mdc>
+
+        <!--
+          Stack traces as a structured, depth-limited field (stack_trace) rather
+          than an unqueryable multi-line blob in Loki.
+        -->
+        <stackTrace>
+          <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+            <!-- maxDepthPerThrowable, NOT maxDepthPerCause (logback logs
+                 "Ignoring unknown property [maxDepthPerCause]" and the depth
+                 limit silently does nothing). -->
+            <maxDepthPerThrowable>20</maxDepthPerThrowable>
+            <rootCauseFirst>true</rootCauseFirst>
+          </throwableConverter>
+        </stackTrace>
+
+        <!--
+          NOTE: static fields (service, tier) are emitted by the <pattern>
+          provider above, NOT by a separate static-fields provider — see the
+          comment there for why <globalCustomFields> was abandoned.
+
+          The Promtail relabel ALSO sets a Loki stream label called `service`
+          from the compose service name, so `| json` will surface this body field
+          as `service_extracted` to avoid the clash. Harmless; expected.
+        -->
+
+      </providers>
     </encoder>
   </appender>
 
   <!-- ═══════════════════════════════════════════
-       Logger configuration
+       Logger configuration (unchanged)
        ═══════════════════════════════════════════ -->
 
   <logger name="dev.stagepass.auth" level="${LOG_LEVEL_AUTH}" additivity="false">
