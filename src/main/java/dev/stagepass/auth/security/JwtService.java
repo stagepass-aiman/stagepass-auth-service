@@ -20,6 +20,7 @@ import java.util.UUID;
  * <p><strong>Claim structure (NFR-SEC-001, ADR-003 §3.2.2):</strong>
  * <ul>
  *   <li>{@code sub} — userId (UUID string)</li>
+ *   <li>{@code iss} — issuer; this Auth Service's configured identifier (RFC 7519 §4.1.1)</li>
  *   <li>{@code role} — platform role (CUSTOMER | ORGANISER | VENUE | ADMIN)</li>
  *   <li>{@code jti} — JWT ID (UUID) — used for targeted JTI blocklist revocation</li>
  *   <li>{@code iat} — issued-at (epoch seconds)</li>
@@ -48,10 +49,12 @@ public class JwtService {
 
     private final RsaKeyProvider rsaKeyProvider;
     private final int accessTokenTtlSeconds;
+    private final String issuer;
 
     public JwtService(RsaKeyProvider rsaKeyProvider, AppProperties properties) {
         this.rsaKeyProvider = rsaKeyProvider;
         this.accessTokenTtlSeconds = properties.jwt().accessTokenTtlSeconds();
+        this.issuer = properties.jwt().issuer();
 
         // Validate the configured TTL at startup. Fail fast if misconfigured.
         if (accessTokenTtlSeconds > 900) {
@@ -61,7 +64,18 @@ public class JwtService {
                 "Set JWT_ACCESS_TTL ≤ 900 in environment configuration."
             );
         }
-        log.info("JwtService initialised. access_token_ttl={}s", accessTokenTtlSeconds);
+        // Fail fast on a blank issuer, mirroring the TTL guard above. A token with
+        // iss="" is a latent trap: once downstream services enforce iss, they would
+        // reject every token. Catch the misconfig at boot, not in production.
+        // (Optional hardening — remove if you judge it outside issue #7's scope.)
+        if (issuer == null || issuer.isBlank()) {
+            throw new IllegalStateException(
+                "JWT issuer is blank. Set AUTH_JWT_ISSUER " +
+                "(e.g. https://api.stagepass.dev/auth)."
+            );
+        }
+        log.info("JwtService initialised. access_token_ttl={}s issuer={}",
+                 accessTokenTtlSeconds, issuer);
     }
 
     /**
@@ -84,6 +98,7 @@ public class JwtService {
                 .and()
             // Registered claims
             .subject(userId.toString())
+            .issuer(issuer)
             .id(jti)                               // jti — JWT ID for revocation
             .issuedAt(Date.from(now))
             .expiration(Date.from(expiry))
