@@ -89,7 +89,7 @@ class AuthServiceTest {
     @BeforeEach
     void setUp() {
         appProperties = new AppProperties(
-            new AppProperties.JwtProperties(null, null, "test-key", 900, 604800),
+            new AppProperties.JwtProperties(null, null, "test-key", "https://auth.test.stagepass.dev", 900, 604800),
             new AppProperties.RateLimitProperties(new AppProperties.RateLimitProperties.LoginRateLimitProperties(5)),
             new AppProperties.LockoutProperties(3, 30)   // 3 max attempts, 30 min lockout
         );

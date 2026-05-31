@@ -111,6 +111,8 @@ class AuthControllerIT {
         registry.add("app.jwt.private-key-b64", () -> testPrivateKeyB64);
         registry.add("app.jwt.public-key-b64", () -> testPublicKeyB64);
         registry.add("app.jwt.key-id", () -> "test-key-it-1");
+        registry.add("app.jwt.key-id", () -> "test-key-it-1");
+        registry.add("app.jwt.issuer", () -> TEST_ISSUER);
     }
 
     // ── Test infrastructure ───────────────────────────────────────────────────
@@ -120,6 +122,7 @@ class AuthControllerIT {
 
     private static final String EMAIL = "integration-test@stagepass.dev";
     private static final String PASSWORD = "IntegrationTest1!";
+    private static final String TEST_ISSUER = "https://auth.it.stagepass.dev";
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -374,6 +377,37 @@ class AuthControllerIT {
                         {"refreshToken":"%s"}
                         """.formatted(refreshToken)))
                 .andExpect(status().isUnauthorized());
+        }
+    }
+
+    @Nested
+    @DisplayName("Access token claims")
+    class AccessTokenClaims {
+
+        @Test
+        @DisplayName("issued access token carries the configured iss claim (NFR-SEC-001)")
+        void accessTokenCarriesIssuer() throws Exception {
+            String email = "iss-claim-" + System.nanoTime() + "@test.dev";
+            MvcResult result = mockMvc.perform(post("/auth/register")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""
+                        {"email":"%s","password":"ValidPass1!","role":"CUSTOMER","displayName":"T"}
+                        """.formatted(email)))
+                .andExpect(status().isCreated())
+                .andReturn();
+
+            String accessToken = objectMapper
+                .readTree(result.getResponse().getContentAsString())
+                .get("accessToken").asText();
+
+            // Decode the payload segment (no re-verification needed — we only
+            // confirm the claim is present in a token from the real issuance path).
+            String payloadJson = new String(java.util.Base64.getUrlDecoder()
+                .decode(accessToken.split("\\.")[1]));
+            JsonNode payload = objectMapper.readTree(payloadJson);
+
+            assertThat(payload.has("iss")).isTrue();
+            assertThat(payload.get("iss").asText()).isEqualTo(TEST_ISSUER);
         }
     }
 

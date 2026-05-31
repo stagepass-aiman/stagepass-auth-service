@@ -315,6 +315,12 @@
             <exclude>**/*IT.java</exclude>
           </excludes>
           <argLine>${argLine}</argLine> <!-- JaCoCo agent injected here. -->
+          <environmentVariables>
+            <!-- docker-java negotiates API 1.32; the native WSL2 engine (v28+,
+                 API 1.4x) rejects anything below 1.40. Pin via ENV VAR — docker-java
+                 reads the environment, not a -D property. (RULE-43, WSL2 native engine) -->
+            <DOCKER_API_VERSION>1.43</DOCKER_API_VERSION>
+          </environmentVariables>
         </configuration>
       </plugin>
 
@@ -327,6 +333,9 @@
         <artifactId>maven-failsafe-plugin</artifactId>
         <configuration>
           <argLine>${argLine}</argLine>
+          <environmentVariables>
+            <DOCKER_API_VERSION>1.43</DOCKER_API_VERSION>
+          </environmentVariables>
         </configuration>
         <executions>
           <execution>

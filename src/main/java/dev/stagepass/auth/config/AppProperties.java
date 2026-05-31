@@ -24,6 +24,12 @@ public record AppProperties(
         String privateKey,
         String publicKey,
         @DefaultValue("stagepass-auth-key-1") String keyId,
+        // iss claim value — RFC 7519 §4.1.1. Identifies THIS auth server as the
+        // minting authority. Option A: a per-environment issuer URI, so a token
+        // minted in staging is distinguishable from one minted in prod even when
+        // they share a signing key. Default is the local-dev issuer; staging/prod
+        // override via the AUTH_JWT_ISSUER env var (12-factor — never hardcoded).
+        @DefaultValue("http://localhost:8081") String issuer,
         @DefaultValue("900") int accessTokenTtlSeconds,
         @DefaultValue("604800") int refreshTokenTtlSeconds
     ) {}

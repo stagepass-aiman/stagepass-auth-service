@@ -41,6 +41,7 @@ class JwtServiceTest {
 
     private JwtService jwtService;
     private KeyPair keyPair;
+    private static final String EXPECTED_ISSUER = "https://auth.test.stagepass.dev";
 
     @BeforeEach
     void setUp() throws Exception {
@@ -61,7 +62,7 @@ class JwtServiceTest {
 
         // 900s access token TTL (15 min), 604800s refresh TTL (7 days).
         AppProperties props = new AppProperties(
-            new AppProperties.JwtProperties(null, null, "test-key-1", 900, 604800),
+            new AppProperties.JwtProperties(null, null, "test-key-1", EXPECTED_ISSUER, 900, 604800),
             new AppProperties.RateLimitProperties(new AppProperties.RateLimitProperties.LoginRateLimitProperties(5)),
             new AppProperties.LockoutProperties(10, 30)
         );
@@ -112,6 +113,16 @@ class JwtServiceTest {
 
             Claims claims = jwtService.validateAndExtractClaims(token);
             assertThat(claims.getId()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("token contains the configured issuer (iss) claim")
+        void issuerClaimIsPresentAndCorrect() {
+            String token = jwtService.issueAccessToken(UUID.randomUUID(), UserRole.CUSTOMER);
+
+            Claims claims = jwtService.validateAndExtractClaims(token);
+            // Presence AND correctness — a present-but-wrong iss is still a bug.
+            assertThat(claims.getIssuer()).isEqualTo(EXPECTED_ISSUER);
         }
 
         @Test
@@ -178,10 +189,11 @@ class JwtServiceTest {
             when(otherProvider.getKeyId()).thenReturn("other-key");
 
             AppProperties props = new AppProperties(
-                new AppProperties.JwtProperties(null, null, "other-key", 900, 604800),
+                new AppProperties.JwtProperties(null, null, "other-key", EXPECTED_ISSUER, 900, 604800),
                 new AppProperties.RateLimitProperties(new AppProperties.RateLimitProperties.LoginRateLimitProperties(5)),
                 new AppProperties.LockoutProperties(10, 30)
             );
+
             JwtService otherJwtService = new JwtService(otherProvider, props);
 
             // Issue a token with the second key — our JwtService should reject it.

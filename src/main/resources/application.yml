@@ -185,6 +185,13 @@ app:
     # Rotate this value when rotating the RSA keypair.
     key-id: ${AUTH_RSA_KEY_ID:stagepass-auth-key-1}
 
+    # Issuer (iss claim, RFC 7519 §4.1.1): identifies THIS Auth Service as the
+    # token's minting authority. Option A — per-environment URI. Local default
+    # below; staging/prod set AUTH_JWT_ISSUER to the real public URL
+    # (e.g. https://api.stagepass.dev/auth). Downstream services will validate
+    # this value in a later step; until then it is informational. (NFR-SEC-001)
+    issuer: ${AUTH_JWT_ISSUER:http://localhost:8081}
+
     # Access token lifetime. MUST be ≤ 900 seconds (15 minutes). (NFR-SEC-002)
     access-token-ttl-seconds: ${JWT_ACCESS_TTL:900}
 
